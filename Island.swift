@@ -17,6 +17,7 @@ struct Track {
     var playing = true
     var total: Double = 214
     var source = "demo"          // "Music", "Spotify" o "demo"
+    var artwork: NSImage? = nil
 }
 
 struct Toast {
@@ -41,6 +42,8 @@ final class IslandModel: ObservableObject {
     @Published var notchW: CGFloat = 190
     @Published var notchH: CGFloat = 34
 
+    @Published var hovering = false
+    private var collapseTask: Task<Void, Never>?
     private var ticker: Timer?
     private var transientTask: Task<Void, Never>?
 
@@ -82,7 +85,7 @@ final class IslandModel: ObservableObject {
 
     var bodyHeight: CGFloat {
         switch current {
-        case .music: return 140
+        case .music: return 156
         case .timer, .navigation: return 60
         case .recording: return 80
         case .call: return callAnswered ? 60 : 84
@@ -160,13 +163,45 @@ final class IslandModel: ObservableObject {
     // MARK: Música (Music.app / Spotify / demo)
 
     func musicUpdate(_ t: Track, position: Double, stopped: Bool) {
+        var t = t
+        let changed = t.title != track.title || t.source != track.source
+        if t.artwork == nil && !changed { t.artwork = track.artwork }
         track = t
         elapsed = position
         if stopped {
             if live == .music { stopLive() }
-        } else if live == .idle || live == .music {
-            live = .music
+            return
         }
+        if live == .idle || live == .music {
+            live = .music
+            if changed && transient == nil { peek() }
+        }
+    }
+
+    // Al cambiar de canción la isla se abre unos segundos
+    func peek() {
+        expanded = true
+        collapseTask?.cancel()
+        collapseTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_500_000_000)
+            if !Task.isCancelled, let self, !self.hovering, self.live == .music { self.expanded = false }
+        }
+    }
+
+    // Pasar el mouse expande la isla de música
+    func hover(_ inside: Bool) {
+        hovering = inside
+        guard transient == nil, live == .music else { return }
+        expanded = inside
+    }
+
+    func seek(_ t: Double) {
+        elapsed = t
+        if track.source != "demo" { Player.seek(track.source, t) }
+    }
+
+    func setArtwork(_ img: NSImage, for title: String) {
+        if track.title == title { track.artwork = img }
     }
 
     func control(_ command: String) {
@@ -258,6 +293,7 @@ struct IslandView: View {
         .foregroundStyle(.white)
         .preferredColorScheme(.dark)
         .onTapGesture { m.tapIsland() }
+        .onHover { m.hover($0) }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -268,7 +304,7 @@ struct IslandView: View {
         case .idle:
             Color.clear
         case .music:
-            if m.expanded { musicBig } else { compact(art(22), Equalizer(active: m.track.playing)) }
+            if m.expanded { musicBig } else { compact(artView(22), Equalizer(active: m.track.playing)) }
         case .timer:
             if m.expanded { timerBig } else {
                 compact(Image(systemName: "timer").foregroundStyle(.orange),
@@ -337,13 +373,22 @@ struct IslandView: View {
         big {
             VStack(spacing: 10) {
                 HStack(spacing: 12) {
-                    art(52)
+                    artView(52)
                     titles(m.track.title, m.track.artist)
                     Spacer()
                     Equalizer(active: m.track.playing)
                 }
-                ProgressView(value: min(m.elapsed, m.track.total), total: max(m.track.total, 1))
-                    .tint(.white)
+                VStack(spacing: 3) {
+                    Scrubber(value: m.elapsed, total: m.track.total) { m.seek($0) }
+                    HStack {
+                        Text(fmt(Int(m.elapsed)))
+                        Spacer()
+                        Text("-" + fmt(max(0, Int(m.track.total - m.elapsed))))
+                    }
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                }
                 HStack(spacing: 36) {
                     ctl("backward.fill", "previous track")
                     ctl(m.track.playing ? "pause.fill" : "play.fill", "playpause")
